@@ -1,0 +1,78 @@
+--- a/src/spicelib/analysis/dctran.c
++++ b/src/spicelib/analysis/dctran.c
+@@ -82,6 +82,7 @@
+     int startIters;
+     int converged;
+     int firsttime;
++    int recovery_attempts;
+     int error;
+ #ifdef WANT_SENSE2
+     int save, save2, size;
+@@ -665,6 +666,7 @@
+     ckt->CKTstates[0] = temp;
+ 
+ /* 600 */
++    recovery_attempts = 0;
+     for (;;) {
+ #if defined SHARED_MODULE
+         redostep = 1;
+@@ -707,6 +709,59 @@
+ #endif
+         /* Central solver step */
+         converged = NIiter(ckt,ckt->CKTtranMaxIter);
++        /* At a collapsed timestep, the integration conductances can make
++           Newton iteration less stable as the timestep shrinks. Try a
++           bounded sequence of larger first-order steps before giving up.
++           Each candidate must still converge and pass CKTtrunc below. */
++        if (converged == E_ITERLIM && !firsttime && recovery_attempts < 16 &&
++            ckt->CKTdelta <= 64 * ckt->CKTdelmin
++#ifdef XSPICE
++            && ckt->evt->counts.num_insts == 0
++#endif
++           ) {
++            double attempted_time = ckt->CKTtime;
++            double attempted_delta = ckt->CKTdelta;
++            int attempted_order = ckt->CKTorder;
++            double previous_time = attempted_time - attempted_delta;
++            double maximum_delta = MIN(ckt->CKTmaxStep, ckt->CKTfinalTime - previous_time);
++            maximum_delta = MIN(maximum_delta, ckt->CKTbreaks[0] - previous_time);
++            while (recovery_attempts++ < 16) {
++                ckt->CKTdelta = MIN(ckt->CKTdelta * 8, maximum_delta);
++                if (ckt->CKTdelta <= attempted_delta)
++                    break;
++                if (previous_time + ckt->CKTdelta <= previous_time)
++                    continue;
++                ckt->CKTtime = previous_time + ckt->CKTdelta;
++                ckt->CKTdeltaOld[0] = ckt->CKTdelta;
++                ckt->CKTorder = 1;
++                ckt->CKTmode = (save_mode & MODEUIC) | MODETRAN | MODEINITPRED;
++                NIcomCof(ckt);
++#ifdef PREDICTOR
++                error = NIpred(ckt);
++#endif
++#ifdef XSPICE
++                g_mif_info.breakpoint.current = 1.0e30;
++#endif
++                ckt->CKTstat->STATrejected++;
++                ckt->CKTstat->STATtimePts++;
++                converged = NIiter(ckt, ckt->CKTtranMaxIter);
++                if (converged == 0) {
++                    olddelta = ckt->CKTdelta;
++                    save_order = ckt->CKTorder;
++                    break;
++                }
++                if (converged != E_ITERLIM)
++                    break;
++            }
++            if (converged != 0) {
++                ckt->CKTtime = attempted_time;
++                ckt->CKTdelta = attempted_delta;
++                ckt->CKTdeltaOld[0] = attempted_delta;
++                ckt->CKTorder = attempted_order;
++                NIcomCof(ckt);
++            }
++        }
++
+ 
+         ckt->CKTstat->STATtimePts ++;
+         ckt->CKTmode = (ckt->CKTmode&MODEUIC)|MODETRAN | MODEINITPRED;

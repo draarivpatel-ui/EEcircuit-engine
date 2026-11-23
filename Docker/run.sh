@@ -75,6 +75,7 @@ echo "build: Applying hicum2 removal patch"
 
 cp /hicum2_patch.sh ./hicum2_patch.sh
 ./hicum2_patch.sh || { echo "build: hicum2 patch failed, stopping execution"; exit 1; }
+patch -p1 < /mnt/transient-timestep.patch || { echo "build: transient timestep patch failed, stopping execution"; exit 1; }
 
 ############################################
 
