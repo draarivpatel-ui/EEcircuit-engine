@@ -76,6 +76,8 @@ echo "build: Applying hicum2 removal patch"
 cp /hicum2_patch.sh ./hicum2_patch.sh
 ./hicum2_patch.sh || { echo "build: hicum2 patch failed, stopping execution"; exit 1; }
 
+git apply /transient-numerics.patch || { echo "build: transient numerics patch failed, stopping execution"; exit 1; }
+
 ############################################
 
 echo -e "\n"
