@@ -1,0 +1,9 @@
+Behavioral current step into a capacitor
+Vcontrol control 0 PULSE(0 1 42.338u 1p 1p 100n 1m)
+Bcurrent 0 output I={V(control) > .5 ? 5 : 0}
+C1 output 0 1n
+R1 output 0 1Gig
+.save V(output)
+.options reltol=1e-5 vntol=1e-8 abstol=1e-14 chgtol=1e-16
+.tran 1u 50u 0 125n
+.end
