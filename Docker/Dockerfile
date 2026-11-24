@@ -30,6 +30,7 @@ RUN apt-get update && apt-get -y install emscripten
 
 COPY ./run.sh /
 COPY ./hicum2_patch.sh /
+COPY ./transient-numerics.patch /
 
 RUN chmod +x /run.sh
 RUN chmod +x /hicum2_patch.sh

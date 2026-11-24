@@ -57,6 +57,7 @@ async function main() {
 
         await runCommand("npx", ["tsx", "test/test-lmzm33602-startup.ts"]);
         await runCommand("npx", ["tsx", "test/test-behavioral-current-step-svg.ts"]);
+        await runCommand("npx", ["tsx", "test/test-transient-numerics.ts"]);
 
         // 3.5 Test package PSpice/XSPICE compatibility path
         console.log("\n--- Testing Package PSA TPS63802 ---");

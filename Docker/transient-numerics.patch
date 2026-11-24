@@ -1,0 +1,944 @@
+diff --git a/src/maths/ni/niinteg.c b/src/maths/ni/niinteg.c
+--- a/src/maths/ni/niinteg.c
++++ b/src/maths/ni/niinteg.c
+@@ -25,10 +25,11 @@
+     case TRAPEZOIDAL:
+         switch(ckt->CKTorder) {
+         case 1:
+-            ckt->CKTstate0[ccap] = ckt->CKTag[0] * ckt->CKTstate0[qcap]
+-                    + ckt->CKTag[1] * ckt->CKTstate1[qcap];
++            *ceq = ckt->CKTag[1] * ckt->CKTstate1[qcap];
++            ckt->CKTstate0[ccap] = ckt->CKTag[0] * ckt->CKTstate0[qcap] + *ceq;
+             break;
+         case 2:
++            *ceq = -ckt->CKTstate1[ccap] * ckt->CKTag[1] - ckt->CKTag[0] * ckt->CKTstate1[qcap];
+             ckt->CKTstate0[ccap] = - ckt->CKTstate1[ccap] * ckt->CKTag[1] +
+                     ckt->CKTag[0] *
+                     ( ckt->CKTstate0[qcap] - ckt->CKTstate1[qcap] );
+@@ -60,6 +61,7 @@
+             /* fall through */
+         case 1:
+             ckt->CKTstate0[ccap] += ckt->CKTag[1]* ckt->CKTstate1[qcap];
++            *ceq = ckt->CKTstate0[ccap];
+             ckt->CKTstate0[ccap] += ckt->CKTag[0]* ckt->CKTstate0[qcap];
+             break;
+
+@@ -74,7 +76,7 @@
+         strcpy(errMsg,methodmsg);
+         return(E_METHOD);
+     }
+-    *ceq = ckt->CKTstate0[ccap] - ckt->CKTag[0] * ckt->CKTstate0[qcap];
++
+     *geq = ckt->CKTag[0] * cap;
+     return(OK);
+ }
+diff --git a/src/spicelib/devices/cap/capask.c b/src/spicelib/devices/cap/capask.c
+--- a/src/spicelib/devices/cap/capask.c
++++ b/src/spicelib/devices/cap/capask.c
+@@ -11,6 +11,16 @@
+ #include "ngspice/ifsim.h"
+ #include "ngspice/sperror.h"
+ #include "ngspice/suffix.h"
++
++/* The companion unknown stores I/(m*geq). Reading it avoids cancellation
++ * when terminal charge differences are smaller than the node resolution. */
++static double
++capacitor_current(CKTcircuit *ckt, CAPinstance *here)
++{
++    if (here->CAPbranch && (ckt->CKTmode & MODETRAN))
++        return here->CAPcompanionGeq * ckt->CKTrhsOld[here->CAPbranch];
++    return *(ckt->CKTstate0 + here->CAPccap);
++}
+
+ /* ARGSUSED */
+ int
+@@ -72,9 +82,9 @@
+                 if (ckt->CKTmode & MODETRANOP) {
+                     value->rValue = 0;
+                 } else {
+-                    value->rValue = *(ckt->CKTstate0 + here->CAPccap);
++                    value->rValue = capacitor_current(ckt, here);
+                 }
+-            } else value->rValue = *(ckt->CKTstate0 + here->CAPccap);
++            } else value->rValue = capacitor_current(ckt, here);
+
+             value->rValue *= here->CAPm;
+
+@@ -91,11 +101,11 @@
+                 if (ckt->CKTmode & MODETRANOP) {
+                     value->rValue = 0;
+                 } else {
+-                    value->rValue = *(ckt->CKTstate0 + here->CAPccap) *
++                    value->rValue = capacitor_current(ckt, here) *
+                             (*(ckt->CKTrhsOld + here->CAPposNode) -
+                             *(ckt->CKTrhsOld + here->CAPnegNode));
+                 }
+-            } else value->rValue = *(ckt->CKTstate0 + here->CAPccap) *
++            } else value->rValue = capacitor_current(ckt, here) *
+                             (*(ckt->CKTrhsOld + here->CAPposNode) -
+                             *(ckt->CKTrhsOld + here->CAPnegNode));
+
+diff --git a/src/spicelib/devices/cap/capacld.c b/src/spicelib/devices/cap/capacld.c
+--- a/src/spicelib/devices/cap/capacld.c
++++ b/src/spicelib/devices/cap/capacld.c
+@@ -26,6 +26,7 @@
+                 here = CAPnextInstance(here)) {
+
+             m = here->CAPm;
++            if (here->CAPbranch) *(here->CAPbranchBranchPtr) += 1.0;
+
+             val = ckt->CKTomega * here->CAPcapac;
+
+diff --git a/src/spicelib/devices/cap/capdefs.h b/src/spicelib/devices/cap/capdefs.h
+--- a/src/spicelib/devices/cap/capdefs.h
++++ b/src/spicelib/devices/cap/capdefs.h
+@@ -29,6 +29,11 @@
+
+     const int CAPposNode; /* number of positive node of capacitor */
+     const int CAPnegNode; /* number of negative node of capacitor */
++
++    int CAPbranch;
++    double CAPcompanionGeq;
++    double *CAPposBranchPtr, *CAPnegBranchPtr;
++    double *CAPbranchPosPtr, *CAPbranchNegPtr, *CAPbranchBranchPtr;
+
+     double CAPtemp;     /* temperature at which this capacitor operates */
+     double CAPdtemp;    /* delta-temperature of this instance */
+diff --git a/src/spicelib/devices/cap/capext.h b/src/spicelib/devices/cap/capext.h
+--- a/src/spicelib/devices/cap/capext.h
++++ b/src/spicelib/devices/cap/capext.h
+@@ -16,6 +16,7 @@
+ extern void CAPsPrint(GENmodel*,CKTcircuit*);
+ extern int CAPsSetup(SENstruct *,GENmodel*);
+ extern int CAPsUpdate(GENmodel*,CKTcircuit*);
++extern int CAPunsetup(GENmodel*,CKTcircuit*);
+ extern int CAPsetup(SMPmatrix*,GENmodel*,CKTcircuit*,int*);
+ extern int CAPtemp(GENmodel*,CKTcircuit*);
+ extern int CAPtrunc(GENmodel*,CKTcircuit*,double*);
+diff --git a/src/spicelib/devices/cap/capinit.c b/src/spicelib/devices/cap/capinit.c
+--- a/src/spicelib/devices/cap/capinit.c
++++ b/src/spicelib/devices/cap/capinit.c
+@@ -35,7 +35,7 @@
+     .DEVmodParam = CAPmParam,
+     .DEVload = CAPload,
+     .DEVsetup = CAPsetup,
+-    .DEVunsetup = NULL,
++    .DEVunsetup = CAPunsetup,
+     .DEVpzSetup = CAPsetup,
+     .DEVtemperature = CAPtemp,
+     .DEVtrunc = CAPtrunc,
+diff --git a/src/spicelib/devices/cap/capload.c b/src/spicelib/devices/cap/capload.c
+--- a/src/spicelib/devices/cap/capload.c
++++ b/src/spicelib/devices/cap/capload.c
+@@ -71,15 +71,33 @@
+                         *(ckt->CKTstate1+here->CAPccap) =
+                             *(ckt->CKTstate0+here->CAPccap);
+                     }
+-                    *(here->CAPposPosPtr) += m * geq;
+-                    *(here->CAPnegNegPtr) += m * geq;
+-                    *(here->CAPposNegPtr) -= m * geq;
+-                    *(here->CAPnegPosPtr) -= m * geq;
+-                    *(ckt->CKTrhs+here->CAPposNode) -= m * ceq;
+-                    *(ckt->CKTrhs+here->CAPnegNode) += m * ceq;
+-                } else
++                    here->CAPcompanionGeq = geq;
++                    if (here->CAPbranch && geq != 0.0 && m != 0.0) {
++                        *(here->CAPposBranchPtr) += m * geq;
++                        *(here->CAPnegBranchPtr) -= m * geq;
++                        *(here->CAPbranchPosPtr) += 1.0;
++                        *(here->CAPbranchNegPtr) -= 1.0;
++                        *(here->CAPbranchBranchPtr) -= 1.0;
++                        ckt->CKTrhs[here->CAPbranch] -= ceq / geq;
++                    } else {
++                        *(here->CAPposPosPtr) += m * geq;
++                        *(here->CAPnegNegPtr) += m * geq;
++                        *(here->CAPposNegPtr) -= m * geq;
++                        *(here->CAPnegPosPtr) -= m * geq;
++                        *(ckt->CKTrhs+here->CAPposNode) -= m * ceq;
++                        *(ckt->CKTrhs+here->CAPnegNode) += m * ceq;
++                        if (here->CAPbranch) *(here->CAPbranchBranchPtr) += 1.0;
++                    }
++                } else {
+                     *(ckt->CKTstate0+here->CAPqcap) = here->CAPcapac * vcap;
++                    if (here->CAPbranch) *(here->CAPbranchBranchPtr) += 1.0;
++                }
+             }
++        }
++    } else {
++        for (; model; model = CAPnextModel(model)) {
++            for (here = CAPinstances(model); here; here = CAPnextInstance(here))
++                if (here->CAPbranch) *(here->CAPbranchBranchPtr) += 1.0;
+         }
+     }
+     return(OK);
+diff --git a/src/spicelib/devices/cap/cappzld.c b/src/spicelib/devices/cap/cappzld.c
+--- a/src/spicelib/devices/cap/cappzld.c
++++ b/src/spicelib/devices/cap/cappzld.c
+@@ -32,6 +32,7 @@
+     
+             val = here->CAPcapac;
+             m = here->CAPm;
++            if (here->CAPbranch) *(here->CAPbranchBranchPtr) += 1.0;
+ 	    
+ 	    *(here->CAPposPosPtr ) +=   m * val * s->real;
+             *(here->CAPposPosPtr +1) += m * val * s->imag;
+diff --git a/src/spicelib/devices/cap/capsetup.c b/src/spicelib/devices/cap/capsetup.c
+--- a/src/spicelib/devices/cap/capsetup.c
++++ b/src/spicelib/devices/cap/capsetup.c
+@@ -111,6 +111,26 @@
+     return(E_NOMEM);\
+ } } while(0)
+
++            /* The auxiliary unknown is I/(m*geq), measured in volts. Keeping
++             * C/dt off the node diagonal preserves weak conductances. Keep
++             * the existing stamps for KLU and sensitivity. */
++            if (here->CAPposNode != here->CAPnegNode && !ckt->CKTsenInfo
++#ifdef KLU
++                && !ckt->CKTkluMODE
++#endif
++               ) {
++                CKTnode *branch_node;
++                if (!here->CAPbranch) {
++                    int error = CKTmkVolt(ckt, &branch_node, here->CAPname, "internal");
++                    if (error) return error;
++                    here->CAPbranch = branch_node->number;
++                }
++                TSTALLOC(CAPposBranchPtr,CAPposNode,CAPbranch);
++                TSTALLOC(CAPnegBranchPtr,CAPnegNode,CAPbranch);
++                TSTALLOC(CAPbranchPosPtr,CAPbranch,CAPposNode);
++                TSTALLOC(CAPbranchNegPtr,CAPbranch,CAPnegNode);
++                TSTALLOC(CAPbranchBranchPtr,CAPbranch,CAPbranch);
++            }
+             TSTALLOC(CAPposPosPtr,CAPposNode,CAPposNode);
+             TSTALLOC(CAPnegNegPtr,CAPnegNode,CAPnegNode);
+             TSTALLOC(CAPposNegPtr,CAPposNode,CAPnegNode);
+@@ -120,3 +140,17 @@
+     return(OK);
+ }
+
++
++int
++CAPunsetup(GENmodel *inModel, CKTcircuit *ckt)
++{
++    CAPmodel *model;
++    CAPinstance *here;
++    for (model = (CAPmodel *)inModel; model; model = CAPnextModel(model)) {
++        for (here = CAPinstances(model); here; here = CAPnextInstance(here)) {
++            if (here->CAPbranch > 0) CKTdltNNum(ckt, here->CAPbranch);
++            here->CAPbranch = 0;
++        }
++    }
++    return OK;
++}
+diff --git a/src/xspice/icm/xtradev/pswitch/cfunc.mod b/src/xspice/icm/xtradev/pswitch/cfunc.mod
+--- a/src/xspice/icm/xtradev/pswitch/cfunc.mod
++++ b/src/xspice/icm/xtradev/pswitch/cfunc.mod
+@@ -311,12 +311,11 @@
+     if(ANALYSIS != MIF_AC) {            /* Output DC & Transient Values  */
+         OUTPUT(out) = INPUT(out) / r;
+         OUTPUT(cntl_in) = INPUT(cntl_in) / r_cntl_in;
+-//        PARTIAL(out,out) = pi_pvout;
+-//        PARTIAL(out,cntl_in) = pi_pcntl;
+-//        PARTIAL(cntl_in,cntl_in) = 1 / r_cntl_in;
+-//        PARTIAL(cntl_in,out) = 0;           /* cntl input resistance is
+-//                                              independent to out port */
+-        cm_analog_auto_partial();
++        PARTIAL(out,out) = pi_pvout;
++        PARTIAL(out,cntl_in) = PARAM(log) == MIF_TRUE
++            ? pi_pcntl / fabs(cntl_on - cntl_off) : pi_pcntl;
++        PARTIAL(cntl_in,cntl_in) = 1 / r_cntl_in;
++        PARTIAL(cntl_in,out) = 0;
+
+     /* Note that the minus signs are required  because current is positive
+        flowing INTO rather than OUT OF a component node.       */
+diff --git a/src/maths/ni/niiter.c b/src/maths/ni/niiter.c
+--- a/src/maths/ni/niiter.c
++++ b/src/maths/ni/niiter.c
+@@ -32,4 +32,5 @@
+     int error, i, j;
+
++    void *linear_system = NULL;
+     int iterno = 0;
+     int ipass = 0;
+@@ -86,4 +87,5 @@
+ #endif
+                 FREE(OldCKTstate0);
++                spFreeSystem(linear_system);
+                 return (error);
+             }
+@@ -100,7 +102,22 @@
+ #endif
+                     FREE(OldCKTstate0);
++                    spFreeSystem(linear_system);
+                     return(error); /* badly formed matrix */
+                 }
+                 ckt->CKTniState |= NIDIDPREORDER;
++            }
++
++            spFreeSystem(linear_system);
++            linear_system = NULL;
++            if ((ckt->CKTmode & MODETRAN) && !ckt->CKTsenInfo && ckt->CKTdiagGmin == 0.0
++#ifdef KLU
++                && !ckt->CKTkluMODE
++#endif
++               ) {
++                linear_system = spSaveSystem(ckt->CKTmatrix->SPmatrix, ckt->CKTrhs);
++                if (!linear_system) {
++                    FREE(OldCKTstate0);
++                    return E_NOMEM;
++                }
+             }
+
+@@ -142,4 +159,5 @@
+ #endif
+                     FREE(OldCKTstate0);
++                    spFreeSystem(linear_system);
+                     return(error); /* can't handle these errors - pass up! */
+                 }
+@@ -192,4 +210,5 @@
+ #endif
+                         FREE(OldCKTstate0);
++                        spFreeSystem(linear_system);
+                         return(error);
+                     }
+@@ -214,4 +233,5 @@
+ #endif
+                     FREE(OldCKTstate0);
++                    spFreeSystem(linear_system);
+                     return(error);
+                 }
+@@ -237,4 +257,5 @@
+ #endif
+                     FREE(OldCKTstate0);
++                    spFreeSystem(linear_system);
+                     return(error);
+                 }
+@@ -253,4 +274,9 @@
+             startTime = SPfrontEnd->IFseconds();
+             SMPsolve(ckt->CKTmatrix, ckt->CKTrhs, ckt->CKTrhsSpare);
++            if (linear_system) {
++                spRefineSystem(ckt->CKTmatrix->SPmatrix, linear_system, ckt->CKTrhs);
++                spFreeSystem(linear_system);
++                linear_system = NULL;
++            }
+             ckt->CKTstat->STATsolveTime +=
+                 SPfrontEnd->IFseconds() - startTime;
+@@ -282,4 +308,5 @@
+                 }
+                 FREE(OldCKTstate0);
++                spFreeSystem(linear_system);
+                 return(E_ITERLIM);
+             }
+@@ -333,4 +360,5 @@
+                 ckt->CKTstat->STATnumIter += iterno;
+                 FREE(OldCKTstate0);
++                spFreeSystem(linear_system);
+                 return(OK);
+             }
+@@ -356,4 +384,5 @@
+ #endif
+             FREE(OldCKTstate0);
++            spFreeSystem(linear_system);
+             return(E_INTERN);
+             /* impossible - no such INITF flag! */
+diff --git a/src/maths/sparse/sputils.c b/src/maths/sparse/sputils.c
+--- a/src/maths/sparse/sputils.c
++++ b/src/maths/sparse/sputils.c
+@@ -1,3 +1,5 @@
++#include <math.h>
++#include <string.h>
+ /*
+  *  MATRIX UTILITY MODULE
+  *
+@@ -2191,3 +2193,119 @@
+     return;
+ }
+ #endif /* DOCUMENTATION */
++
++
++/* Preserve the unfactored system for compensated iterative refinement. */
++typedef struct {
++    int row, column;
++    double coefficient;
++} RefineEntry;
++
++typedef struct {
++    int size, count;
++    RefineEntry *entries;
++    double *vectors;
++} RefineSystem;
++
++void
++spFreeSystem(void *saved)
++{
++    RefineSystem *system = saved;
++    if (system) {
++        free(system->entries);
++        free(system->vectors);
++        free(system);
++    }
++}
++
++void *
++spSaveSystem(MatrixPtr matrix, double *rhs)
++{
++    RefineSystem *system = calloc(1, sizeof(*system));
++    ElementPtr element;
++    int column, count = 0;
++    if (!system)
++        return NULL;
++    /* The external numbering can contain gaps after circuit unsetup. */
++    system->size = spGetSize(matrix, 1);
++    for (column = 1; column <= matrix->Size; column++)
++        for (element = matrix->FirstInCol[column]; element; element = element->NextInCol)
++            if (element->Real != 0.0)
++                count++;
++    system->entries = calloc((size_t)count + 1, sizeof(*system->entries));
++    system->vectors = calloc((size_t)system->size + 1, 4 * sizeof(double));
++    if (!system->entries || !system->vectors) {
++        spFreeSystem(system);
++        return NULL;
++    }
++    memcpy(system->vectors, rhs, ((size_t)system->size + 1) * sizeof(double));
++    count = 0;
++    for (column = 1; column <= matrix->Size; column++) {
++        for (element = matrix->FirstInCol[column]; element; element = element->NextInCol) {
++            if (element->Real != 0.0) {
++                RefineEntry *entry = &system->entries[count++];
++                entry->row = matrix->IntToExtRowMap[element->Row];
++                entry->column = matrix->IntToExtColMap[column];
++                entry->coefficient = element->Real;
++            }
++        }
++    }
++    system->count = count;
++    return system;
++}
++
++void
++spRefineSystem(MatrixPtr matrix, void *saved, double *solution)
++{
++    RefineSystem *system = saved;
++    int n = system->size, iteration, i;
++    size_t bytes = ((size_t)n + 1) * sizeof(double);
++    double *residual = system->vectors + n + 1;
++    double *roundoff = residual + n + 1;
++    double *correction = roundoff + n + 1;
++    double previous = HUGE_VAL;
++
++    /* Reuse LU for at most five corrections, stopping when improvement stops.
++     * This improves the linear solve; all Newton and LTE checks still run. */
++    for (iteration = 0; iteration < 5; iteration++) {
++        double norm = 0.0;
++        int changed = 0;
++        memcpy(residual, system->vectors, bytes);
++        memset(roundoff, 0, bytes);
++        memset(correction, 0, bytes);
++        for (i = 0; i < system->count; i++) {
++            RefineEntry entry = system->entries[i];
++            double product = entry.coefficient * solution[entry.column];
++            double product_error = fma(entry.coefficient, solution[entry.column], -product);
++            double old = residual[entry.row], sum = old - product;
++            double delta = sum - old;
++            /* TwoSum plus the product residual retains cancellation error. */
++            roundoff[entry.row] += (old - (sum - delta)) + (-product - delta) - product_error;
++            residual[entry.row] = sum;
++        }
++        for (i = 1; i <= n; i++)
++            residual[i] += roundoff[i];
++        residual[0] = 0.0;
++        spSolve(matrix, residual, correction, NULL, NULL);
++        for (i = 1; i <= n; i++) {
++            double magnitude;
++            if (!isfinite(correction[i]))
++                return;
++            magnitude = fabs(correction[i]) / (1.0 + fabs(solution[i]));
++            if (magnitude > norm)
++                norm = magnitude;
++        }
++        if (norm >= previous)
++            break;
++        previous = norm;
++        for (i = 1; i <= n; i++) {
++            double corrected = solution[i] + correction[i];
++            if (!isfinite(corrected))
++                return;
++            changed |= corrected != solution[i];
++            solution[i] = corrected;
++        }
++        if (!changed)
++            break;
++    }
++}
+diff --git a/src/include/ngspice/spmatrix.h b/src/include/ngspice/spmatrix.h
+--- a/src/include/ngspice/spmatrix.h
++++ b/src/include/ngspice/spmatrix.h
+@@ -297,6 +297,9 @@
+ extern  void     spMultiply( MatrixPtr, spREAL*, spREAL*, spREAL*, spREAL* );
+ extern  void     spMultTransposed(MatrixPtr,spREAL*,spREAL*,spREAL*,spREAL*);
+ extern  void     spSolve( MatrixPtr, spREAL*, spREAL*, spREAL*, spREAL* );
++extern  void*    spSaveSystem(MatrixPtr, double*);
++extern  void     spFreeSystem(void*);
++extern  void     spRefineSystem(MatrixPtr, void*, double*);
+ extern  void     spSolveTransposed(MatrixPtr,spREAL*,spREAL*,spREAL*,spREAL*);
+
+ /* ------------------------------------------------------ */
+diff --git a/src/include/ngspice/mif.h b/src/include/ngspice/mif.h
+--- a/src/include/ngspice/mif.h
++++ b/src/include/ngspice/mif.h
+@@ -74,6 +74,10 @@
+    char               *errmsg;    /* An error msg from a cm_... function */
+    Mif_Bkpt_Info_t    breakpoint; /* Data used by dynamic breakpoints */
+    Mif_Auto_Partial_t auto_partial; /* Flags to enable auto partial computations */
++    /* Root search requests may retract or extend a provisional trial. */
++    double analogRetryTime;
++    /* NR/LTE rejection invalidates event brackets from that attempt. */
++    unsigned analogStepRevision;
+ } Mif_Info_t;
+
+
+diff --git a/src/spicelib/analysis/dctran.c b/src/spicelib/analysis/dctran.c
+--- a/src/spicelib/analysis/dctran.c
++++ b/src/spicelib/analysis/dctran.c
+@@ -240,6 +240,7 @@
+                 ckt->CKTdcMaxIter);
+
+         if(converged != 0) {
++
+             fprintf(stderr,"\nError: Finding the operating point for transient simulation failed \n");
+             CKTncDump(ckt);
+             fprintf(stderr,"\n");
+@@ -276,6 +277,7 @@
+
+         /* Breakpoint stuff */
+         /* Initialize the temporary breakpoint variables to infinity */
++        g_mif_info.analogRetryTime = 1.0e30;
+         g_mif_info.breakpoint.current = 1.0e30;
+         g_mif_info.breakpoint.last    = 1.0e30;
+ #endif
+@@ -689,6 +691,7 @@
+ #ifdef XSPICE
+
+         /* Initialize temporary breakpoint to infinity */
++        g_mif_info.analogRetryTime = 1.0e30;
+         g_mif_info.breakpoint.current = 1.0e30;
+
+         /* Add convergence problem reporting flags */
+@@ -723,6 +726,9 @@
+
+         /* If no convergence in Central solver step */
+         if(converged != 0) {
++#ifdef XSPICE
++            g_mif_info.analogStepRevision++;
++#endif
+
+ #ifndef SHARED_MODULE
+             ckt->CKTtime = ckt->CKTtime -ckt->CKTdelta;
+@@ -749,6 +755,8 @@
+                - new delta by difference between by retracted time and breakpoint */
+
+         past_breakpoint:
++            g_mif_info.breakpoint.current = MIN(g_mif_info.breakpoint.current,
++                                                g_mif_info.analogRetryTime);
+             ckt->CKTsaveDelta = ckt->CKTdelta;
+             ckt->CKTtime -= ckt->CKTdelta;
+             ckt->CKTdelta = g_mif_info.breakpoint.current - ckt->CKTtime;
+@@ -798,6 +806,11 @@
+                 UPDATE_STATS(DOING_TRAN);
+                 return(error);
+             }
++#ifdef XSPICE
++            if (g_mif_info.analogRetryTime < 1.0e30 &&
++                (g_mif_info.analogRetryTime != ckt->CKTtime || ckt->CKTnoncon))
++                goto past_breakpoint;
++#endif
+             if (newdelta > .9 * ckt->CKTdelta) {
+ #if defined(XSPICE)
+                 /* The timestep has succeeded.  XSPICE instances with
+@@ -885,6 +898,9 @@
+                 ckt->CKTstat->STATrejected ++;
+ #else
+                 redostep = 1;
++#endif
++#ifdef XSPICE
++                g_mif_info.analogStepRevision++;
+ #endif
+                 ckt->CKTdelta = newdelta;
+ #ifdef STEPDEBUG
+diff --git a/src/spicelib/devices/asrc/asrcdefs.h b/src/spicelib/devices/asrc/asrcdefs.h
+--- a/src/spicelib/devices/asrc/asrcdefs.h
++++ b/src/spicelib/devices/asrc/asrcdefs.h
+@@ -31,6 +31,9 @@
+
+     int ASRCtype;              /* Whether source is voltage or current */
+     int ASRCbranch;            /* number of branch equation added for v source */
++    struct sASRCevent *ASRCevents;
++    int ASRCeventMode;
++    unsigned ASRCeventEpoch;
+     IFparseTree *ASRCtree;     /* The parse tree */
+     int *ASRCvars;             /* indices of the controlling nodes/branches */
+
+diff --git a/src/spicelib/devices/asrc/asrcext.h b/src/spicelib/devices/asrc/asrcext.h
+--- a/src/spicelib/devices/asrc/asrcext.h
++++ b/src/spicelib/devices/asrc/asrcext.h
+@@ -3,6 +3,11 @@
+ Author: 1985 Thomas L. Quarles
+ **********/
+
++extern int ASRCtrunc(GENmodel *, CKTcircuit *, double *);
++extern int ASRCaccept(CKTcircuit *, GENmodel *);
++struct sASRCinstance;
++extern int ASRCeventSetup(struct sASRCinstance *, CKTcircuit *);
++extern void ASRCeventFree(struct sASRCinstance *);
+ extern int ASRCask(CKTcircuit *, GENinstance *, int, IFvalue *, IFvalue*);
+ extern int ASRCconvTest(GENmodel *, CKTcircuit *);
+ extern int ASRCdelete(GENinstance *);
+diff --git a/src/spicelib/devices/asrc/asrcinit.c b/src/spicelib/devices/asrc/asrcinit.c
+--- a/src/spicelib/devices/asrc/asrcinit.c
++++ b/src/spicelib/devices/asrc/asrcinit.c
+@@ -40,10 +40,10 @@
+     .DEVpzSetup =  (int (*)(SMPmatrix *matrix, GENmodel *inModel,
+             CKTcircuit *ckt, int *states)) ASRCsetup,
+     .DEVtemperature = ASRCtemp,
+-    .DEVtrunc = NULL,
++    .DEVtrunc = ASRCtrunc,
+     .DEVfindBranch = ASRCfindBr,
+     .DEVacLoad = ASRCacLoad,
+-    .DEVaccept = NULL,
++    .DEVaccept = ASRCaccept,
+     .DEVdestroy = ASRCdestroy,
+     .DEVmodDelete = NULL,
+     .DEVdelete = ASRCdelete,
+diff --git a/src/spicelib/devices/asrc/asrcset.c b/src/spicelib/devices/asrc/asrcset.c
+--- a/src/spicelib/devices/asrc/asrcset.c
++++ b/src/spicelib/devices/asrc/asrcset.c
+@@ -69,6 +69,7 @@
+             here->ASRCvars = TMALLOC(int, here->ASRCtree->numVars);
+             here->ASRCacValues = TMALLOC(double, here->ASRCtree->numVars + 1);
+
++
+ #ifdef KLU
+             here->ASRCposBinding = TMALLOC (BindElement *, j) ;
+ #endif
+@@ -124,6 +125,12 @@
+         }
+     }
+
++    for (model = (ASRCmodel *)inModel; model; model = ASRCnextModel(model))
++        for (here = ASRCinstances(model); here; here = ASRCnextInstance(here)) {
++            error = ASRCeventSetup(here, ckt);
++            if (error)
++                return error;
++        }
+     return(OK);
+ }
+
+@@ -140,6 +147,7 @@
+                 CKTdltNNum(ckt, here->ASRCbranch);
+             here->ASRCbranch = 0;
+
++            ASRCeventFree(here);
+             FREE(here->ASRCposPtr);
+             FREE(here->ASRCvars);
+             FREE(here->ASRCacValues);
+diff --git a/src/spicelib/devices/asrc/asrcdel.c b/src/spicelib/devices/asrc/asrcdel.c
+--- a/src/spicelib/devices/asrc/asrcdel.c
++++ b/src/spicelib/devices/asrc/asrcdel.c
+@@ -15,6 +15,7 @@
+ {
+     ASRCinstance *inst = (ASRCinstance *) gen_inst;
+
++    ASRCeventFree(inst);
+     INPfreeTree(inst->ASRCtree);
+     FREE(inst->ASRCacValues);
+     FREE(inst->ASRCposPtr);
+diff --git a/src/spicelib/devices/asrc/asrcconv.c b/src/spicelib/devices/asrc/asrcconv.c
+--- a/src/spicelib/devices/asrc/asrcconv.c
++++ b/src/spicelib/devices/asrc/asrcconv.c
+@@ -9,4 +9,8 @@
+ #include "ngspice/sperror.h"
+ #include "ngspice/suffix.h"
++#include "ngspice/inpptree.h"
++#ifdef XSPICE
++#include "ngspice/mif.h"
++#endif
+
+
+@@ -36,5 +40,5 @@
+
+             if (here->ASRCtree->IFeval(here->ASRCtree, ckt->CKTgmin, &rhs,
+-                                       asrc_vals, asrc_derivs) != OK)
++                                       asrc_vals, NULL) != OK)
+                 return(E_BADPARM);
+
+@@ -59,2 +63,256 @@
+     return(OK);
+ }
++
++
++/* Predicate transitions are located only after a converged circuit solve.
++ * Search points stay provisional; rejected NR/LTE attempts discard the bracket. */
++typedef enum {
++    ASRC_ROOT_NONE, ASRC_ROOT_SEARCHING, ASRC_ROOT_LOCATED, ASRC_ROOT_COINCIDENT
++} ASRCrootState;
++
++enum { ASRC_EVENT_NORMAL, ASRC_EVENT_LOCATE, ASRC_EVENT_ACCEPT };
++
++typedef struct sASRCevent {
++    struct sASRCevent *next;
++    INPparseNode *node;
++    ASRCinstance *owner;
++    CKTcircuit *ckt;
++    void (*function)(void);
++    double time, argument, value, rootTime;
++    double lo, hi, flo, fhi, wlo, whi;
++    int side;
++    ASRCrootState pending;
++    unsigned epoch, revision;
++    int valid;
++} ASRCevent;
++
++static double
++ASRCcomparison(double argument, void *data)
++{
++    ASRCevent *event = data;
++    CKTcircuit *ckt = event->ckt;
++    double value = PTunary(event->function)(argument);
++#ifdef XSPICE
++    double root, scale;
++    if (event->pending && event->revision != g_mif_info.analogStepRevision)
++        event->pending = ASRC_ROOT_NONE;
++    if (event->owner->ASRCeventMode == ASRC_EVENT_ACCEPT) {
++        if (event->epoch == event->owner->ASRCeventEpoch)
++            return value;
++        event->time = ckt->CKTtime;
++        event->argument = event->pending == ASRC_ROOT_LOCATED && event->rootTime == ckt->CKTtime ? 0.0 : argument;
++        event->value = value;
++        event->valid = ckt->CKTtime > 0.0;
++        event->epoch = event->owner->ASRCeventEpoch;
++        event->pending = ASRC_ROOT_NONE;
++    } else if ((ckt->CKTmode & MODETRAN) && event->valid &&
++               event->epoch == event->owner->ASRCeventEpoch &&
++               ckt->CKTtime > event->time && isfinite(argument) &&
++               isfinite(event->argument)) {
++        if (event->pending == ASRC_ROOT_LOCATED && event->rootTime == ckt->CKTtime)
++            value = event->value;
++        if (event->owner->ASRCeventMode == ASRC_EVENT_LOCATE) {
++            if (!event->pending && event->argument != 0.0 &&
++                ((argument >= 0.0 && event->argument < 0.0) ||
++                 (argument <= 0.0 && event->argument > 0.0))) {
++                event->lo = event->time;
++                event->flo = event->argument;
++                event->hi = ckt->CKTtime;
++                event->fhi = argument;
++                event->wlo = event->flo;
++                event->whi = event->fhi;
++                event->side = 0;
++                event->revision = g_mif_info.analogStepRevision;
++                event->pending = ASRC_ROOT_SEARCHING;
++            }
++            if (event->pending == ASRC_ROOT_SEARCHING && ckt->CKTtime >= event->lo) {
++                if (ckt->CKTtime >= event->lo && ckt->CKTtime <= event->hi) {
++                    if ((argument > 0.0) == (event->flo > 0.0) && argument != 0.0) {
++                        if (ckt->CKTtime > event->lo) {
++                            event->whi = event->side == 1 ? event->whi * 0.5 : event->fhi;
++                            event->side = 1;
++                        }
++                        event->lo = ckt->CKTtime;
++                        event->flo = event->wlo = argument;
++                    } else {
++                        if (ckt->CKTtime < event->hi) {
++                            event->wlo = event->side == -1 ? event->wlo * 0.5 : event->flo;
++                            event->side = -1;
++                        }
++                        event->hi = ckt->CKTtime;
++                        event->fhi = event->whi = argument;
++                    }
++                }
++                /* Match the existing temporary-breakpoint spacing policy.
++                 * A whole bracket inside that interval is a coincident event. */
++                if (event->hi <= event->time + ckt->CKTminBreak) {
++                    event->pending = ASRC_ROOT_COINCIDENT;
++                    if (ckt->CKTorder != 1) {
++                        ckt->CKTnoncon++;
++                        g_mif_info.analogRetryTime = MIN(g_mif_info.analogRetryTime, ckt->CKTtime);
++                    }
++                    return value;
++                }
++                /* Illinois false position prevents a fixed-endpoint stall. */
++                scale = MAX(fabs(event->wlo), fabs(event->whi));
++                root = event->lo + (event->hi - event->lo) *
++                       ((fabs(event->wlo) / scale) /
++                        (fabs(event->wlo) / scale + fabs(event->whi) / scale));
++                if (event->fhi == 0.0 || event->hi - event->lo <= ckt->CKTminBreak ||
++                    nextafter(event->lo, event->hi) == event->hi)
++                    root = event->hi;
++                if (event->fhi == 0.0 ||
++                    event->hi - event->lo <= ckt->CKTminBreak ||
++                    nextafter(event->lo, event->hi) == event->hi) {
++                    event->rootTime = root;
++                    event->pending = ASRC_ROOT_LOCATED;
++                } else if (root <= event->lo || root >= event->hi) {
++                    root = event->lo + (event->hi - event->lo) * 0.5;
++                }
++                if (event->pending == ASRC_ROOT_SEARCHING &&
++                    root < event->time + ckt->CKTminBreak)
++                    root = event->time + ckt->CKTminBreak;
++                if (root != ckt->CKTtime)
++                    g_mif_info.analogRetryTime = MIN(g_mif_info.analogRetryTime, root);
++            }
++            if (event->pending == ASRC_ROOT_LOCATED) {
++                if (event->rootTime == ckt->CKTtime) {
++                    /* Integrate the left limit, then restart on the right. */
++                    value = event->value;
++                    g_mif_info.breakpoint.last = ckt->CKTtime;
++                    g_mif_info.analogRetryTime = MIN(g_mif_info.analogRetryTime, ckt->CKTtime);
++                } else if (event->rootTime < ckt->CKTtime) {
++                    g_mif_info.analogRetryTime = MIN(g_mif_info.analogRetryTime, event->rootTime);
++                } else {
++                    g_mif_info.breakpoint.current = MIN(g_mif_info.breakpoint.current, event->rootTime);
++                }
++            }
++        }
++    }
++#endif
++    return value;
++}
++
++static int
++ASRCdiscontinuous(INPparseNode *node)
++{
++    if (!node)
++        return 0;
++    return (node->type == PT_FUNCTION && node->funcnum >= PTF_EQ0 &&
++            node->funcnum <= PTF_LE0) || ASRCdiscontinuous(node->left) ||
++            ASRCdiscontinuous(node->right);
++}
++
++static int
++ASRCeventTree(ASRCinstance *here, CKTcircuit *ckt, INPparseNode *node)
++{
++    ASRCevent *event;
++    int error;
++    if (!node)
++        return OK;
++    if (node->type == PT_FUNCTION && node->funcnum >= PTF_GT0 &&
++        node->funcnum <= PTF_LE0 && !node->data && !ASRCdiscontinuous(node->left)) {
++        event = TMALLOC(ASRCevent, 1);
++        if (!event)
++            return E_NOMEM;
++        event->node = node;
++        event->owner = here;
++        event->ckt = ckt;
++        event->function = node->function;
++        event->next = here->ASRCevents;
++        here->ASRCevents = event;
++        node->function = (void (*)(void))ASRCcomparison;
++        node->data = event;
++    }
++    error = ASRCeventTree(here, ckt, node->left);
++    if (error)
++        return error;
++    return ASRCeventTree(here, ckt, node->right);
++}
++
++int
++ASRCeventSetup(ASRCinstance *here, CKTcircuit *ckt)
++{
++#ifdef XSPICE
++    return ASRCeventTree(here, ckt, ((INPparseTree *)here->ASRCtree)->tree);
++#else
++    return OK;
++#endif
++}
++
++void
++ASRCeventFree(ASRCinstance *here)
++{
++    ASRCevent *event = here->ASRCevents;
++    while (event) {
++        ASRCevent *next = event->next;
++        event->node->function = event->function;
++        event->node->data = NULL;
++        FREE(event);
++        event = next;
++    }
++    here->ASRCevents = NULL;
++}
++
++int
++ASRCaccept(CKTcircuit *ckt, GENmodel *inModel)
++{
++    ASRCmodel *model = (ASRCmodel *)inModel;
++    ASRCinstance *here;
++    int i, error;
++    double value;
++    for (; model; model = ASRCnextModel(model)) {
++        for (here = ASRCinstances(model); here; here = ASRCnextInstance(here)) {
++            if (!here->ASRCevents)
++                continue;
++            i = here->ASRCtree->numVars;
++            if (asrc_nvals < i) {
++                asrc_nvals = i;
++                asrc_vals = TREALLOC(double, asrc_vals, i);
++                asrc_derivs = TREALLOC(double, asrc_derivs, i);
++            }
++            for (i = 0; i < here->ASRCtree->numVars; i++)
++                asrc_vals[i] = ckt->CKTrhsOld[here->ASRCvars[i]];
++            here->ASRCeventEpoch++;
++            here->ASRCeventMode = ASRC_EVENT_ACCEPT;
++            error = here->ASRCtree->IFeval(here->ASRCtree, ckt->CKTgmin,
++                                         &value, asrc_vals, NULL);
++            here->ASRCeventMode = ASRC_EVENT_NORMAL;
++            if (error)
++                return error;
++        }
++    }
++    return OK;
++}
++
++int
++ASRCtrunc(GENmodel *inModel, CKTcircuit *ckt, double *timeStep)
++{
++    ASRCmodel *model = (ASRCmodel *)inModel;
++    ASRCinstance *here;
++    int i, error;
++    double rhs, tolerance;
++    NG_IGNORE(timeStep);
++#ifdef XSPICE
++    g_mif_info.analogRetryTime = 1.0e30;
++#endif
++    for (; model; model = ASRCnextModel(model)) {
++        for (here = ASRCinstances(model); here; here = ASRCnextInstance(here)) {
++            if (!here->ASRCevents)
++                continue;
++            for (i = 0; i < here->ASRCtree->numVars; i++)
++                asrc_vals[i] = ckt->CKTrhs[here->ASRCvars[i]];
++            here->ASRCeventMode = ASRC_EVENT_LOCATE;
++            error = here->ASRCtree->IFeval(here->ASRCtree, ckt->CKTgmin,
++                                         &rhs, asrc_vals, NULL);
++            here->ASRCeventMode = ASRC_EVENT_NORMAL;
++            if (error)
++                return error;
++            tolerance = ckt->CKTreltol * MAX(fabs(rhs), fabs(here->ASRCprev_value)) +
++                (here->ASRCtype == ASRC_VOLTAGE ? ckt->CKTvoltTol : ckt->CKTabstol);
++            if (fabs(rhs - here->ASRCprev_value) > tolerance)
++                ckt->CKTnoncon++;
++        }
++    }
++    return OK;
++}
+diff --git a/src/spicelib/parser/ifeval.c b/src/spicelib/parser/ifeval.c
+--- a/src/spicelib/parser/ifeval.c
++++ b/src/spicelib/parser/ifeval.c
+@@ -54,6 +54,10 @@
+             controlled_exit(EXIT_BAD);
+         return err;
+     }
++
++    /* Callers that only need the expression value may omit derivatives. */
++    if (!derivs)
++        return OK;
+
+     for (i = 0; i < myTree->p.numVars; i++)
+         if ((err = PTeval(myTree->derivs[i], gmin, &derivs[i], vals)) != OK) {
